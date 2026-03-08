@@ -1,0 +1,6 @@
+/user_data
+.env
+*.log
+.*txt
+data_history.json
+.DS_Store
