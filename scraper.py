@@ -141,9 +141,28 @@ def check_zeros(intervals):
 
 async def parse_table_data(page):
     try:
-        await page.wait_for_selector('h4.efWsLj', timeout=15000)
-        total_kwh_text = await page.inner_text('div.jciMSz')
-        date_text = await page.inner_text('h4.efWsLj')
+        # Use generic h4 selector as class names are unstable (e.g. h4.efWsLj)
+        await page.wait_for_selector('h4', timeout=15000)
+        
+        try:
+            total_kwh_text = await page.inner_text('div.jciMSz')
+        except:
+            total_kwh_text = "0"
+
+        # Find the h4 that looks like a date
+        date_text = ""
+        h4_locs = page.locator('h4')
+        count = await h4_locs.count()
+        for i in range(count):
+            txt = await h4_locs.nth(i).inner_text()
+            if parse_date_octopus(txt):
+                date_text = txt
+                break
+        
+        if not date_text and count > 0:
+             # Fallback to first if parse check fails
+             date_text = await h4_locs.first.inner_text()
+             
         body_text = await page.inner_text('body')
         matches = re.findall(r'(\d{2}:\d{2})\s+([0-9.,]+)\s*kWh', body_text)
         intervals = []
@@ -152,7 +171,7 @@ async def parse_table_data(page):
         return {"date": date_text, "total_web": total_kwh_text.strip(), "intervals": intervals}
     except: return None
 
-async def send_telegram_report(dades):
+async def send_telegram_report(dades, silent=False):
     if not dades or not dades['intervals']: return False
     target_date = parse_date_octopus(dades['date'])
     dia = target_date.day; mes_es = MES_MAP.get(target_date.month, "Mes"); any_val = target_date.year
@@ -182,11 +201,23 @@ async def send_telegram_report(dades):
     msg = f"{tag_mes} {tag_dia}\n📦 **OCTOPUS ENERGY REPORT**\n📅 {dades['date']}\n\n🚀 **Pico:** {pic_val:.3f} kWh ({pic_hora})\n💰 **Coste día: {total_cost:.2f} €**\n📊 **Consumo día: {total_kwh_real:.3f} kWh**\n\n🧾 **Factura Simulada ({mes_es} - {dies_factura} dies):**\n⚡ Energia: {cost_energia_sim:.2f} €\n🔌 Potència/Fixos: {(cost_potencia + cost_altres):.2f} €\n🏛️ Impostos (IE+IVA): {(impost_e + (subtotal+impost_e)*IVA):.2f} €\n💸 **TOTAL: {total_sim:.2f} €**\n\n📈 **Acumulados (kWh):**\n"
     msg += f"🗓 Semana: {week[0]:.2f} kWh | {week[1]:.2f} €\n📅 Mes: {month[0]:.2f} kWh | {month[1]:.2f} €\n🏢 Año: {year[0]:.2f} kWh | {year[1]:.2f} €\n\n✨ **Desglose hoy (Consumo | Coste):**\n"
     for p in ["PUNTA", "LLANO", "VALLE"]: msg += f"{stats[p]['emoji']} **{p}**: {stats[p]['kwh']:.2f} kWh | {stats[p]['cost']:.2f} €\n"
+    
+    if silent:
+        print(f"✅ Dades guardades per {dades['date']} (Mode Silenciós)")
+        return True
+
     try:
         subprocess.run(["clawdbot", "message", "send", "-t", TELEGRAM_TARGET, "--thread-id", TELEGRAM_THREAD_ID, "-m", msg, "--media", CHART_PATH], check=True)
         subprocess.run(["clawdbot", "message", "send", "-t", TELEGRAM_TARGET, "--thread-id", TELEGRAM_THREAD_ID, "-m", "📄 Detalle horario adjunto", "--media", DETAILS_PATH], check=True)
         return True
     except: return False
+
+async def send_telegram_error(error_msg):
+    try:
+        clean_error = str(error_msg).replace('"', "'") 
+        msg = f"⚠️ **Error Octop-Scraper**\n\n`{clean_error}`"
+        subprocess.run(["clawdbot", "message", "send", "-t", TELEGRAM_TARGET, "--thread-id", TELEGRAM_THREAD_ID, "-m", msg], check=False)
+    except: pass
 
 async def handle_login(page):
     try:
@@ -198,7 +229,7 @@ async def handle_login(page):
         await page.locator('button:has-text("Iniciar sesión"), button[type="submit"]').first.click()
         await page.wait_for_url("**/dashboard**", timeout=60000)
 
-async def scrape_process(specific_date=None):
+async def scrape_process(specific_date=None, silent=False, headless=True):
     if not os.path.exists(USER_DATA_DIR): os.makedirs(USER_DATA_DIR)
     if specific_date:
         target_date = specific_date
@@ -207,7 +238,7 @@ async def scrape_process(specific_date=None):
     print(f"🎯 Iniciant procés de scraping per a: {target_date}")
     
     async with async_playwright() as p:
-        context = await p.chromium.launch_persistent_context(user_data_dir=USER_DATA_DIR, headless=True)
+        context = await p.chromium.launch_persistent_context(user_data_dir=USER_DATA_DIR, headless=headless)
         page = context.pages[0] if context.pages else await context.new_page()
         # Afegim timeout a la càrrega inicial
         try:
@@ -221,7 +252,23 @@ async def scrape_process(specific_date=None):
             
             waiting_notified = False
             while True:
-                current_screen_date_text = await page.inner_text('h4.efWsLj')
+                current_screen_date_text = ""
+                try:
+                    # Find date in h4s
+                    h4_locs = page.locator('h4')
+                    cnt = await h4_locs.count()
+                    for i in range(cnt):
+                        t = await h4_locs.nth(i).inner_text()
+                        if parse_date_octopus(t):
+                            current_screen_date_text = t
+                            break
+                    if not current_screen_date_text and cnt > 0:
+                         current_screen_date_text = await h4_locs.first.inner_text()
+                except: pass
+                
+                if not current_screen_date_text:
+                    await asyncio.sleep(2); continue 
+
                 current_screen_date = parse_date_octopus(current_screen_date_text)
                 if not current_screen_date: await asyncio.sleep(10); continue
                 
@@ -243,7 +290,7 @@ async def scrape_process(specific_date=None):
                     if dades:
                         zeros_found = check_zeros(dades['intervals'])
                         if not zeros_found:
-                            if await send_telegram_report(dades): break
+                            if await send_telegram_report(dades, silent=silent): break
                         elif not waiting_notified:
                             gap_str = ", ".join(zeros_found)
                             msg_wait = f"⏳ **Octopus aún no ha publicado todos los datos**\n\nEl día {target_date.strftime('%d/%m/%Y')} todavía no está disponible por completo.\n\n🔍 **GAP detectado:** En las franjas **{gap_str}** el consumo marca 0 kWh.\n\n🔄 Me quedo esperando y refrescando la página cada 30 minutos hasta que Octopus actualice. 🐒💤"
@@ -254,7 +301,85 @@ async def scrape_process(specific_date=None):
                     except: pass
                 elif diff < 0: await page.locator('[data-testid*="daterange-previous-button"]').click(); await asyncio.sleep(2)
                 elif diff > 0: await page.locator('[data-testid*="daterange-forward-button"]').click(); await asyncio.sleep(2)
-        except Exception as e: print(f"❌ Error durant el scraping: {e}")
+        except Exception as e: 
+            print(f"❌ Error durant el scraping: {e}")
+            await send_telegram_error(e)
+        await context.close()
+
+async def scrape_range(start_date, end_date, silent_until=None, headless=True):
+    if not os.path.exists(USER_DATA_DIR): os.makedirs(USER_DATA_DIR)
+    print(f"🎯 Iniciant recuperació per rang: {start_date} -> {end_date}")
+    
+    async with async_playwright() as p:
+        context = await p.chromium.launch_persistent_context(user_data_dir=USER_DATA_DIR, headless=headless)
+        page = context.pages[0] if context.pages else await context.new_page()
+        
+        try:
+            await page.goto(LOGIN_URL, timeout=60000); await asyncio.sleep(2); await handle_login(page)
+            await page.goto(CONSUMO_URL, timeout=60000); await asyncio.sleep(5)
+            
+            # Switch to list view
+            await page.locator('button:has-text("Día")').first.click(); await asyncio.sleep(2)
+            table_btn = page.locator('button[aria-label*="table"], button[aria-label*="lista"]').first
+            if not await table_btn.is_visible(): table_btn = page.locator('div[data-part="toggle-button-option-group"] button').last
+            await table_btn.click(); await asyncio.sleep(3)
+
+            current_target = start_date
+            
+            while current_target <= end_date:
+                print(f"🔄 Processant: {current_target}")
+                
+                # Navigation loop to reach current_target
+                while True:
+                    # Get current screen date
+                    current_screen_date_text = ""
+                    try:
+                        h4_locs = page.locator('h4')
+                        cnt = await h4_locs.count()
+                        for i in range(cnt):
+                            t = await h4_locs.nth(i).inner_text()
+                            if parse_date_octopus(t):
+                                current_screen_date_text = t
+                                break
+                        if not current_screen_date_text and cnt > 0:
+                             current_screen_date_text = await h4_locs.first.inner_text()
+                    except: pass
+                    
+                    if not current_screen_date_text:
+                        await asyncio.sleep(2); continue
+
+                    current_screen_date = parse_date_octopus(current_screen_date_text)
+                    if not current_screen_date: await asyncio.sleep(2); continue
+                    
+                    diff = (current_target - current_screen_date.date()).days
+                    
+                    if diff == 0:
+                        # We are at the target date
+                        dades = await parse_table_data(page)
+                        if dades:
+                            is_silent = False
+                            if silent_until and current_target <= silent_until:
+                                is_silent = True
+                            
+                            # En mode rang, si tenim dades OK, les guardem/enviem
+                            await send_telegram_report(dades, silent=is_silent)
+                            
+                        # Move to next day in the outer loop
+                        break
+                        
+                    elif diff < 0:
+                         # Target is in the past relative to screen (screen is future) -> Go Prev
+                         await page.locator('[data-testid*="daterange-previous-button"]').click(); await asyncio.sleep(1.5)
+                    elif diff > 0:
+                         # Target is in the future relative to screen (screen is past) -> Go Next
+                         await page.locator('[data-testid*="daterange-forward-button"]').click(); await asyncio.sleep(1.5)
+                
+                # Advance target
+                current_target += timedelta(days=1)
+                
+        except Exception as e: 
+            print(f"❌ Error durant el scraping: {e}")
+            await send_telegram_error(e)
         await context.close()
 
 def get_last_stored_date():
