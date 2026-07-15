@@ -1,6 +1,30 @@
-/user_data
+# Secrets and local configuration
 .env
+.env.*
+!.env.example
+
+# Python environments and caches
+.venv/
+venv/
+venv*/
+__pycache__/
+*.py[cod]
+
+# Browser profiles
+user_data*/
+
+# Runtime data and generated reports
+data_history*.json
+pending_reports.json
+sent_reports.json
+waiting_notification.json
+pending_media/
+last_chart.png
+detalle_consumo.txt
 *.log
-.*txt
-data_history.json
+
+# Local debugging helpers
+debug_nav.py
+
+# OS files
 .DS_Store

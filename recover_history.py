@@ -3,8 +3,9 @@ from datetime import date, timedelta, datetime
 import sys
 import os
 
-# Afegim el directori actual al path per poder importar scraper
-sys.path.append(os.getcwd())
+# Afegim el directori de l'script al path, independentment del directori actual.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
 
 try:
     from scraper import scrape_process, scrape_range
